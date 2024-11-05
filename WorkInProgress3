@@ -231,7 +231,6 @@ fig.update_layout(
     title="Gyroscope Signal Divided into 3 Equal Phases with Valid Cycles",
     xaxis_title="Time (seconds)",
     yaxis_title="Filtered Gyro Signal",
-    legend_title="Legend",
 )
 
 # Render the Plotly figure in the HTML report
