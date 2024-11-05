@@ -1,0 +1,281 @@
+import os
+import mne
+import numpy as np
+import plotly.graph_objects as go
+from scipy.signal import find_peaks
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import GaussianNB
+from xgboost import XGBClassifier
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+import webbrowser
+import codecs
+
+# Step 1: Load the BDF file and extract gyroscope data
+file_path = r'C:\Users\kcelo\Documents\Psychophysiological Regulation Data\EEG DATA\EkatBio.bdf'
+raw = mne.io.read_raw_bdf(file_path, preload=True)
+
+# Step 2: Select gyroscope channels
+gyro_channels = ['GyroX', 'GyroY', 'GyroZ']
+gyro_data = raw.copy().pick(gyro_channels).get_data()
+
+# Step 3: Determine the best axis by variance
+variances = [np.var(gyro_data[i]) for i in range(len(gyro_channels))]
+best_axis_index = np.argmax(variances)
+best_gyro_signal = gyro_data[best_axis_index]
+
+# Step 4: Sampling frequency and time vector
+fs = raw.info['sfreq']
+time = np.arange(len(best_gyro_signal)) / fs
+
+# Step 5: Impute missing values and apply a low-pass filter
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
+
+imputer = IterativeImputer(max_iter=10, random_state=42)
+gyro_signal_imputed = imputer.fit_transform(best_gyro_signal.reshape(-1, 1)).ravel()
+
+def low_pass_filter(signal, cutoff, fs, order=4):
+    from scipy.signal import butter, filtfilt
+    nyquist = 0.5 * fs
+    normal_cutoff = cutoff / nyquist
+    b, a = butter(order, normal_cutoff, btype='low', analog=False)
+    return filtfilt(b, a, signal)
+
+gyro_signal_filtered = low_pass_filter(gyro_signal_imputed, cutoff=3, fs=fs)
+
+# Step 6: Manually account for the first peak
+first_peak_start_time = 02.91
+first_peak_end_time = 03.83
+
+# Find the index in the time vector corresponding to these times
+first_peak_start_idx = np.where(time >= first_peak_start_time)[0][0]
+first_peak_end_idx = np.where(time >= first_peak_end_time)[0][0]
+
+# Step 7: Detect peaks (excluding the first manually handled peak)
+all_peaks, _ = find_peaks(gyro_signal_filtered, prominence=0.015, distance=int(0.4 * fs))
+
+# Insert the first peak into the detected peaks array
+all_peaks = np.insert(all_peaks, 0, first_peak_start_idx)  # Manually insert first peak start index
+
+# Step 8: Divide signal into 3 equal phases
+total_samples = len(gyro_signal_filtered)
+samples_per_phase = total_samples // 3
+
+# Phase 1
+gyro_phase1 = gyro_signal_filtered[:samples_per_phase]
+time_phase1 = time[:samples_per_phase]
+
+# Phase 2
+gyro_phase2 = gyro_signal_filtered[samples_per_phase:2 * samples_per_phase]
+time_phase2 = time[samples_per_phase:2 * samples_per_phase]
+
+# Phase 3
+gyro_phase3 = gyro_signal_filtered[2 * samples_per_phase:]
+time_phase3 = time[2 * samples_per_phase:]
+
+# Step 9: Define machine learning pattern recognition function with skipping logic and confidence check
+def extract_features(signal, time, peaks):
+    features = []
+    labels = []
+    cycles = []  # Store cycle details for reporting
+    skip_next = False  # Variable to track if the next peak should be skipped
+    last_valid_duration = None  # Store the last valid cycle's duration for confidence estimation
+
+    for i in range(len(peaks) - 1):
+        # If skipping is enabled, skip the current peak and reset the flag
+        if skip_next:
+            print(f"Skipping peak at index {peaks[i]} and the next peak {peaks[i+1]}")
+            skip_next = False  # Reset skip flag after skipping two peaks
+            continue
+
+        start, end = peaks[i], peaks[i + 1]
+        
+        # Ensure that both 'start' and 'end' are within bounds
+        if start >= len(signal) or end >= len(signal):
+            print(f"Skipping cycle: Start index {start}, End index {end} exceeds bounds")
+            skip_next = True  # Skip the next peak as well
+            continue
+
+        # Calculate cycle features
+        duration = time[end] - time[start]
+        start_amp = signal[start]
+        end_amp = signal[end]
+        peak_diff = abs(end_amp - start_amp)
+        avg_amp = (start_amp + end_amp) / 2
+
+        # Estimate confidence that this is the onset of the next cycle
+        if last_valid_duration is not None:
+            confidence = min(1.0, duration / last_valid_duration)  # Use duration similarity as a confidence measure
+        else:
+            confidence = 1.0  # First valid cycle starts with 100% confidence
+
+        # If the confidence is lower than 80%, skip this peak
+        if confidence < 0.8:
+            print(f"Low confidence ({confidence:.2f}) in this cycle. Skipping this peak and the next.")
+            skip_next = True  # Skip the next peak
+            continue
+
+        # Otherwise, process this cycle
+        features.append([duration, peak_diff, avg_amp])
+        labels.append(1 if 0.736 <= duration <= 1.104 else 0)  # Valid or Invalid label
+
+        # Add cycle details to the report
+        cycles.append({
+            'index': i + 1,
+            'start_time': time[start],
+            'end_time': time[end],
+            'duration': duration,
+            'valid': 'Valid' if 0.736 <= duration <= 1.104 else 'Invalid'
+        })
+
+        # Update the last valid duration for future confidence checks
+        if 0.736 <= duration <= 1.104:
+            last_valid_duration = duration
+
+    return np.array(features), np.array(labels), cycles
+
+def pattern_recognition(phase_signal, phase_time, peaks, onset_duration=60):
+    """
+    This function processes the signal in two parts:
+    - Onset phase: First 60 seconds (or 'onset_duration')
+    - End phase: The remaining part of the phase
+    The function extracts features from the onset phase, trains a classifier, and then uses it to classify the end phase.
+    """
+    # Divide the phase into onset and end parts
+    onset_samples = int(onset_duration * fs)
+    onset_signal = phase_signal[:onset_samples]
+    end_signal = phase_signal[onset_samples:]
+
+    onset_time = phase_time[:onset_samples]
+    end_time = phase_time[onset_samples:]
+
+    # Extract features from onset and end parts
+    onset_peaks = [peak for peak in peaks if peak < onset_samples]
+    X_onset, y_onset, _ = extract_features(onset_signal, onset_time, onset_peaks)
+
+    # Train classifier on onset phase
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_onset, y_onset)
+
+    # Classify the end phase based on onset patterns
+    end_peaks = [peak for peak in peaks if peak >= onset_samples]
+    X_end, y_end, end_cycles = extract_features(end_signal, end_time, end_peaks)
+    predictions = model.predict(X_end)
+
+    return predictions, y_end, end_cycles
+
+# Step 10: Apply pattern recognition on each phase
+phase1_predictions, phase1_labels, phase1_cycles = pattern_recognition(gyro_phase1, time_phase1, all_peaks)
+phase2_predictions, phase2_labels, phase2_cycles = pattern_recognition(gyro_phase2, time_phase2, all_peaks)
+phase3_predictions, phase3_labels, phase3_cycles = pattern_recognition(gyro_phase3, time_phase3, all_peaks)
+
+# Combine the results
+predictions = np.concatenate([phase1_predictions, phase2_predictions, phase3_predictions])
+labels = np.concatenate([phase1_labels, phase2_labels, phase3_labels])
+cycles = phase1_cycles + phase2_cycles + phase3_cycles
+
+# Step 11: Classification report and results
+print(f"Classification Report for Combined Phases:\n{classification_report(labels, predictions)}")
+
+# Step 12: Calculate validity score based on valid/invalid cycle counts
+valid_cycles = sum(predictions == 1)
+invalid_cycles = sum(predictions == 0)
+total_cycles = valid_cycles + invalid_cycles
+
+# Validity score based on valid cycles as a percentage of total cycles
+validity_score_percent = (valid_cycles / total_cycles) * 100 if total_cycles > 0 else 0
+print(f"Validity Score: {validity_score_percent:.2f}%")
+
+# Step 13: Separate valid and invalid cycles for reporting
+valid_cycle_details = [cycle for cycle in cycles if cycle['valid'] == 'Valid']
+invalid_cycle_details = [cycle for cycle in cycles if cycle['valid'] == 'Invalid']
+
+# Step 14: Generate Plotly graph with detected peaks for each phase
+fig = go.Figure()
+
+# Plot Phase 1
+fig.add_trace(go.Scatter(x=time_phase1, y=gyro_phase1, mode='lines', name='Phase 1 Signal'))
+# Plot Phase 2
+fig.add_trace(go.Scatter(x=time_phase2, y=gyro_phase2, mode='lines', name='Phase 2 Signal'))
+# Plot Phase 3
+fig.add_trace(go.Scatter(x=time_phase3, y=gyro_phase3, mode='lines', name='Phase 3 Signal'))
+
+# Mark all detected peaks
+fig.add_trace(go.Scatter(x=time[all_peaks], y=gyro_signal_filtered[all_peaks], mode='markers',
+                         marker=dict(color='gray', size=6), name='Detected Peaks'))
+
+# Mark valid cycle start and end points with different colors
+for cycle in valid_cycle_details:
+    # Add markers for the start and end of each valid cycle
+    fig.add_trace(go.Scatter(x=[cycle['start_time']], y=[gyro_signal_filtered[np.where(time == cycle['start_time'])[0][0]]],
+                             mode='markers', marker=dict(color='green', size=10), name='Valid Cycle Start'))
+    fig.add_trace(go.Scatter(x=[cycle['end_time']], y=[gyro_signal_filtered[np.where(time == cycle['end_time'])[0][0]]],
+                             mode='markers', marker=dict(color='red', size=10), name='Valid Cycle End'))
+
+# Customize the layout
+fig.update_layout(
+    title="Gyroscope Signal with Valid Cycle Onset and End Points",
+    xaxis_title="Time (seconds)",
+    yaxis_title="Filtered Gyro Signal",
+    showlegend=True
+)
+
+# Display the updated figure
+fig.show()
+
+
+
+
+# Step 15: Generate a numerical list of valid and invalid cycles for reporting
+valid_cycles_list = "<ol>" + "".join(
+    [f"<li>Cycle {cycle['index']}: Start: {cycle['start_time']:.2f}s, End: {cycle['end_time']:.2f}s, "
+     f"Duration: {cycle['duration']:.2f}s, Status: {cycle['valid']}</li>"
+     for cycle in valid_cycle_details]) + "</ol>"
+
+invalid_cycles_list = "<ol>" + "".join(
+    [f"<li>Cycle {cycle['index']}: Start: {cycle['start_time']:.2f}s, End: {cycle['end_time']:.2f}s, "
+     f"Duration: {cycle['duration']:.2f}s, Status: {cycle['valid']}</li>"
+     for cycle in invalid_cycle_details]) + "</ol>"
+
+# Step 16: Automatically rename the output HTML file based on the BDF file name
+file_name = os.path.splitext(os.path.basename(file_path))[0]  # Extract file name without extension
+
+# Generate HTML report with classification, validity score, and numerical list of cycles
+output_directory = r'C:\Users\kcelo\Documents\ProcessedGyroData'
+os.makedirs(output_directory, exist_ok=True)
+
+html_report = f"""
+<html>
+    <body>
+        <h1>ML-Enhanced Gyroscope Cycle Report for {file_name}</h1>
+        <h2>Classification Report</h2>
+        <pre>{classification_report(labels, predictions)}</pre>
+        <h2>Validity Score: {validity_score_percent:.2f}%</h2>
+        <h2>Valid Cycles:</h2>
+        {valid_cycles_list}
+        <h2>Invalid Cycles:</h2>
+        {invalid_cycles_list}
+        {fig.to_html(full_html=False, include_plotlyjs='cdn')}
+    </body>
+</html>
+"""
+
+# Save the output HTML with the same name as the BDF file
+output_html = os.path.join(output_directory, f'{file_name}_cycle_analysis.html')
+with codecs.open(output_html, 'w', encoding='utf-8') as f:
+    f.write(html_report)
+
+print(f"HTML report saved at: {output_html}")
+webbrowser.open(output_html)
+
+# Step 17: Save only the start and end times of valid cycles in a separate text file, each on a new row
+valid_start_end_file = os.path.join(output_directory, f'{file_name}_valid_cycles_times2.txt')
+with open(valid_start_end_file, 'w') as f:
+    for cycle in valid_cycle_details:
+        f.write(f"{cycle['start_time']:.2f}\n{cycle['end_time']:.2f}\n")
+
+print(f"Valid cycle start and end times saved at: {valid_start_end_file}")
