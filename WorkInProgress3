@@ -231,6 +231,7 @@ fig.update_layout(
     title="Gyroscope Signal Divided into 3 Equal Phases with Valid Cycles",
     xaxis_title="Time (seconds)",
     yaxis_title="Filtered Gyro Signal",
+    legend_title="Legend",
 )
 
 # Render the Plotly figure in the HTML report
@@ -283,4 +284,3 @@ with open(valid_start_end_file, 'w') as f:
         f.write(f"{cycle['start_time']:.2f}\n{cycle['end_time']:.2f}\n")
 
 print(f"Valid cycle start and end times saved at: {valid_start_end_file}")
-
