@@ -1,0 +1,87 @@
+### **What the Code Does**
+1. **Loads and Processes Data**:
+   - Reads the BDF file containing gyroscope and accelerometer data.
+   - Applies preprocessing steps, including low-pass filtering and missing data imputation.
+
+2. **Detects Head Movements**:
+   - Identifies peaks in the gyroscope data to mark head movements.
+   - Classifies movements as "Left" or "Right" using a trained machine learning model.
+
+3. **Validates Cycles**:
+   - Groups movements into cycles (a "Left" followed by a "Right").
+   - Validates cycles based on predefined duration thresholds.
+   - Corrects invalid cycles and enforces alternating left-right patterns.
+
+4. **Generates a Report**:
+   - Creates an HTML report with:
+     - Validity score.
+     - Detected movements.
+     - Valid and invalid cycles.
+     - An interactive 3D animated visualization of the data.
+
+---
+
+### **Main Features**
+1. **Integration of Accelerometer and Gyroscope Data**:
+   - Both gyroscope (`GyroX`, `GyroY`, `GyroZ`) and accelerometer (`AccelerX`, `AccelerY`, `AccelerZ`) data are used to enhance movement detection accuracy.
+
+2. **Advanced Feature Extraction**:
+   - Extracts statistical features (mean, standard deviation, etc.) and cross-axis correlations (e.g., `GyroX` vs. `GyroY`).
+
+3. **Machine Learning-Based Classification**:
+   - Uses a Gradient Boosting Classifier to classify movements as "Left" or "Right."
+   - Balances training data to avoid model bias.
+
+4. **3D Animated Visualization**:
+   - Displays gyroscope and accelerometer trajectories in a 3D plot.
+   - Highlights detected peaks, valid cycles (green), and invalid cycles (red).
+   - Animates the head movement data over time.
+
+5. **Comprehensive Reporting**:
+   - Calculates and reports the validity score of the detected cycles.
+   - Lists all detected movements with timestamps and classifications.
+   - Differentiates between valid and invalid cycles.
+
+---
+
+### **Key Changes**
+1. **Inclusion of Accelerometer Data**:
+   - Integrated accelerometer features and cross-axis correlations for better movement classification.
+
+2. **Improved Visualization**:
+   - Added accelerometer data to the 3D plot alongside gyroscope data.
+   - Included valid and invalid cycles in the plot with distinct markers.
+
+3. **Enhanced Machine Learning Workflow**:
+   - Balanced training data to improve classification performance.
+   - Expanded the feature set for better accuracy.
+
+4. **Cycle Validation and Correction**:
+   - Enforced alternating left-right movement patterns for valid cycles.
+   - Identified and corrected invalid cycles.
+
+5. **Cleaner and More Informative Output**:
+   - Suppressed irrelevant warnings.
+   - Improved logging for better traceability of processing steps.
+
+---
+
+### **How to Use**
+1. **Prepare the Environment**:
+   - Ensure the required Python libraries are installed: `mne`, `numpy`, `pandas`, `plotly`, `scipy`, `scikit-learn`.
+
+2. **Run the Script**:
+   - Save the code to a file (e.g., `eeggyro.py`).
+   - Place the BDF file in the same directory as the script.
+   - Execute the script: `python eeggyro.py`.
+
+3. **Follow the Instructions**:
+   - Enter the BDF filename when prompted.
+
+4. **View the Results**:
+   - The script generates an HTML report in the `ProcessedGyroData` directory.
+   - The report includes movement details, validity score, and a 3D animated visualization.
+
+---
+
+Let me know if you need any further explanation!
